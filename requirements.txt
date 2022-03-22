@@ -6,5 +6,4 @@ rdflib
 scipy
 leidenalg
 markov-clustering
-rdfalchemy
 sparqlwrapper
