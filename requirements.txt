@@ -2,7 +2,6 @@ networkx
 pandas
 matplotlib
 numpy
-python==3.9.7
 rdflib
 scipy
 leidenalg
