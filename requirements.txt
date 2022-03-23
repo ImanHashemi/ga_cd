@@ -7,3 +7,4 @@ scipy
 leidenalg
 markov-clustering
 sparqlwrapper
+./src/cdlib
