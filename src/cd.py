@@ -12,9 +12,6 @@ from pathlib import Path
 import csv
 import numpy as np
 
-
-
-
 sparql = SPARQLWrapper("https://sparql.goldenagents.org/sparql")
 
 def getName(uri):
@@ -35,10 +32,9 @@ def getBookSet(g, cluster_edges):
         # count += len(g[edge[0]][edge[1]]['books'])
         bookset |= g[edge[0]][edge[1]]['books']
       
-        
     return (len(bookset), bookset)
 
-# get the earliest timestamp and the latest timestamp of a set of edges of a community
+# Get the earliest timestamp and the latest timestamp of a set of edges of a community
 def getMinMaxDates(g, cluster_edges):
     earliestList = []
     latestList = []
@@ -79,12 +75,12 @@ def edgeInCluster(edge, cluster):
         return True
     return False
 
+# Get the largest connected component of a graph
 def getLCC(hg):
     components = nx.connected_components(hg)
     largest_subgraph_size = max(components, key=len)
     lcc = hg.subgraph(largest_subgraph_size)
     return lcc
-
 
 def community_detection_louvain(g):
     g_lcc = getLCC(g)
@@ -117,9 +113,10 @@ def community_detection_louvain(g):
 
     return (louvain_communities, louvain_communities_lcc)
 
-def format_partition(g, coms):
-    # For each community, add all nodes to a dict along with their centrality measure,
-    # sort this dict based on centrality, and add the dict to a list of communities
+
+# For each community, add all nodes to a dict along with their centrality measure,
+# sort this dict based on centrality, and add the dict to a list of communities
+def format_partition(g, coms): 
     dc_sorted_communities_list = []
     degree_centrality = nx.degree_centrality(g)
     cache_folder = Path("./cache/")    
@@ -172,6 +169,7 @@ def format_partition(g, coms):
     return (dc_sorted_communities_list, attribute_cache)
 
 
+# Export results
 def export(sorted_communities, metapath_name, attribute_cache):
     data_folder = Path("results/")
 

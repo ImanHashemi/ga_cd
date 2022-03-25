@@ -1,10 +1,8 @@
 import io
 from socket import getnameinfo
-import uuid
 from xml.etree import ElementTree
 import requests
 
-import pymarc
 import scipy.stats as st
 from matplotlib import colors
 import numpy as np
@@ -12,7 +10,6 @@ from pathlib import Path
 import os
 
 from rdflib import Graph, ConjunctiveGraph, Namespace, OWL, Literal, URIRef, BNode, XSD, RDFS, RDF
-from rdfalchemy import rdfSubject, rdfSingle, rdfMultiple
 from SPARQLWrapper import SPARQLWrapper, JSON
 
 import networkx as nx
@@ -54,8 +51,8 @@ def getName(uri):
     print (name)
     return name
 
+# Create a homogeneous graph based on a given metapath, using the locally stored rdf graph
 def rdf_to_homogeneous(g, metapath):
-    
     query_results = g.query(metapath)
 
     avg_time = int((list(query_results)[0].et.toPython().year + list(query_results)[0].bt.toPython().year) / 2)
@@ -91,7 +88,7 @@ def rdf_to_homogeneous(g, metapath):
     G.graph['latest_time'] = latest_time
     return G
 
-
+# Create a homogeneous graph based on a given metapath, using the goldenagents endpoint
 def rdf_to_homogeneous_endpoint(query):
     print("Creating homogenous graph...")
     sparql = SPARQLWrapper("https://sparql.goldenagents.org/sparql")
