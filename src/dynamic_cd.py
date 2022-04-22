@@ -1,6 +1,3 @@
-from multiprocessing.sharedctypes import Value
-from operator import truediv
-from socket import getnameinfo
 import networkx as nx
 from cdlib import algorithms
 import matplotlib.pyplot as plt
@@ -16,17 +13,13 @@ from cdlib import TemporalClustering
 from matplotlib import cm
 from matplotlib import colors
 from collections import Counter
-
-from pandas import describe_option
-
-
-
+import copy
 
 sparql = SPARQLWrapper("https://sparql.goldenagents.org/sparql")
 
 def getName(uri):
     sparql.setQuery (f"""
-        SELECT ?s ?t
+        SELECT ?t
         WHERE {{ OPTIONAL {{ <{uri}> <http://schema.org/name> ?t}} }}
     """)
     sparql.setReturnFormat(JSON)
@@ -55,7 +48,6 @@ def getMinMaxDates(g, cluster_edges):
             earliestList.append(year)    
         for year in g[edge[0]][edge[1]]['et']:
             latestList.append(year)
-
   
     bins = 10
     if len(earliestList) > 11:
@@ -109,9 +101,8 @@ def create_graph_snapshot(G, start, end):
     return G_snapshot
 
 
-
 # Create a set of graphs based on the given interval and stepsize, i.e. a snapshot graph
-def create_snapshot_graph(G, interval, stepsize):
+def create_snapshot_graph(G, interval, stepsize, names_df):
     earliest = G.graph['earliest_time']
     latest = G.graph['latest_time']
     curr_timestamp = earliest   
@@ -122,7 +113,9 @@ def create_snapshot_graph(G, interval, stepsize):
         start = curr_timestamp
         end = curr_timestamp + interval
         G_snapshot = create_graph_snapshot(G, start, end)
-        if (len(G_snapshot.edges()) > 0):            
+        if (len(G_snapshot.edges()) > 0):
+            names_dict = dict(zip(names_df.uri, names_df.name))
+            nx.set_node_attributes(G_snapshot, names_dict, name="name")            
             snapshots.append(G_snapshot)
             snapshot_times.append((start, end))
         curr_timestamp = start + stepsize
@@ -139,7 +132,6 @@ def list_to_dict(partition):
         for node in community:
             partition_dict[node] =  community_id
         community_id += 1
-
 
 
 # Perform community detection for every snapshot in the snapshot graph, using one of three Louvain variations
@@ -189,11 +181,9 @@ def dynamic_community_detection(snapshots, snapshot_times, parameters, randomize
         if(mod > 0):
             tc.add_clustering(coms, index)
         
-    jaccard = lambda x, y:  len(set(x) & set(y)) / len(set(x) | set(y))
     digraph = None
     stability_trend = None
     return (digraph, stability_trend, tc, snapshots, snapshot_times)
-
 
 
 def execute_dcd(sgs, key):
@@ -215,78 +205,72 @@ def matching(tc, theta):
     timesteps = tc.get_observation_ids()
     init_clustering = tc.get_clustering_at(timesteps[0]).communities
     uid = 0
+    com_events = {}
+    com_events_dyn = {}
 
     # Create a dynamic community for every cluster at the first timestep and add them to the fronts of the dynamic communities
     for index, comm in enumerate(init_clustering):
         dynamic_coms[uid] = [str(timesteps[0]) + "_" + str(index)]
         fronts[uid] = str(timesteps[0]) + "_" + str(index)
         uid += 1
-    
+
     # For each subsequent timestep, get all communities and match them with all fronts,
     # adding them if their simmilarity is higher than theta
     for t in timesteps[1:]:
         t_clustering = tc.get_clustering_at(t).communities
+        fronts_t = copy.copy(fronts)
         for index, comm in enumerate(t_clustering):
             matches = []
-            for front_id, front_comm in fronts.items():
+            for front_id, front_comm in fronts_t.items():
                 sim = jaccard(comm, tc.get_community(front_comm))
                 if sim >= theta:
-                    matches.append(front_id)
+                    matches.append((front_id, front_comm))
             if len(matches) == 0:
                 dynamic_coms[uid] = [str(t) + "_" + str(index)]
                 fronts[uid] = str(t) + "_" + str(index)
                 uid += 1
             else:
-                if len(matches) > 1:
-                    print(f"MERGING {matches}")
-                for match in matches:
-                    if fronts[match].split()[0] == str(t):
-                        print("SPLIT")
-                        dynamic_coms[uid] = dynamic_coms[match][:-1].append(str(t) + "_" + str(index))
+                if len(matches) > 1 and [('m', match[0]) for match in matches] not in com_events_dyn.values():
+                    if len(list(filter(lambda x: t - int(x.split('_')[0]) <= 2, [match[1] for match in matches]))) == len(matches):
+                        print(f"MERGING {[m[0] for m in matches]}")
+                        if t in com_events:
+                            com_events[t].append(('m', matches))
+                            com_events_dyn[t] = [('m', match[0]) for match in matches]
+                        else:
+                            com_events[t] = [('m', matches)]
+                            com_events_dyn[t] = [('m', match[0]) for match in matches]
+
+                for m in matches:
+                    match = m[0]
+                    if fronts[match].split('_')[0] == str(t) and t - int(dynamic_coms[match][-1]) <= 2 :
+                        curr_com = str(t) + "_" + str(index)
+                        to_split_comm = dynamic_coms[match][-2]
+
+                        to_split = match_dyn_com(dynamic_coms, to_split_comm)
+                        new_dyn_com = dynamic_coms[match][:-1]
+                        new_dyn_com.append(str(t) + "_" + str(index))
+                        dynamic_coms[uid] = new_dyn_com
                         fronts[uid] = str(t) + "_" + str(index)
                         uid += 1
+                        
+                        split1_comm = fronts[match]
+                        split1 = match_dyn_com(dynamic_coms, split1_comm)
+                        split2 = match_dyn_com(dynamic_coms, curr_com)
+                        print(f"SPLITTING {to_split} ({dynamic_coms[match][-2]}) into {split1} ({fronts[match]}) and {split2} ({curr_com})")
+                        if t in com_events:
+                            com_events[t].append(('s', (to_split, to_split_comm), (split1, split1_comm), (split2, curr_com)))
+                            com_events_dyn[t].append(('s', (to_split, split1, split2)))
+
+                        else:
+                            com_events[t] = [('s', (to_split, to_split_comm), [(split1, split1_comm), (split2, curr_com)])]
+                            com_events_dyn[t] = [('s', (to_split, split1, split2))]
+                            
                     else:
                         dynamic_coms[match].append(str(t) + "_" + str(index))
                         fronts[match] = str(t) + "_" + str(index)
-    return dynamic_coms
+    return (dynamic_coms, com_events)
 
 
-# Print the given dynamic community, iterating through al it's static communities in all timesteps it exists
-def print_dyn_com(dynamic_coms, id, tc, snapshots, snapshot_times):
-    dynamic_com = dynamic_coms[id]
-    cache_folder = Path("./cache/")    
-    file_to_check = cache_folder / "attribute_cache.gpickle"
-    if not file_to_check.exists():
-        attribute_cache = {}
-    else:
-        attribute_cache = nx.read_gpickle(cache_folder / "attribute_cache.gpickle")
-
-    for part in dynamic_com:
-        part_timestep = part.split('_')[0]
-        com_id = part.split('_')[1]
-        partition = tc.get_clustering_at(int(part_timestep)).communities
-        snapshot = snapshots[int(part_timestep)]
-        com = partition[int(com_id)]
-        interval = snapshot_times[int(part_timestep)]
-        print(interval)
-        print_dc(tc, dynamic_coms, int(part_timestep), com_id, None, id, snapshots, snapshot_times)
-        
-         # Get degree centralities
-        degree_centrality = nx.degree_centrality(snapshots[int(part_timestep)])
-        dc_centrality_dict = {}
-        for node in com:
-            if node in attribute_cache:
-                com_name = attribute_cache[node]
-            else:
-                com_name = getName(node)
-                attribute_cache[node] = com_name
-            dc_centrality_dict[node] = (degree_centrality[node], com_name)
-        
-        dc_centrality_dict_sorted = sorted(dc_centrality_dict.items(), key=lambda item: item[1], reverse=True)
-
-        for value in dc_centrality_dict_sorted:
-            print(f"{value[1][1]} - Centrality: {round(value[1][0], 3)} - URI: {value[0]}")
-        print("-------------------------")
 
 def match_dyn_com(dynamic_coms, id):
     for dyn_id, coms in dynamic_coms.items():
@@ -301,10 +285,10 @@ def print_dc(tc, dynamic_coms, t, com_id, name, dyn_com_id, snapshots, snapshot_
     graph = snapshots[t]
     position = nx.spring_layout(graph, seed=7)  # compute graph layout
     n_communities = len(partition)
-    node_size = 120
+    node_size = 70
 
-    plt.figure(figsize=(10, 10))
     plt.rcParams['figure.facecolor'] = 'white'
+    plt.figure(figsize=(7, 5), dpi=110)
     plt.title(str(snapshot_times[t]))
 
     filtered_nodelist = list(np.concatenate(partition))
@@ -315,10 +299,11 @@ def print_dc(tc, dynamic_coms, t, com_id, name, dyn_com_id, snapshots, snapshot_
         )
     )
     fig = nx.draw_networkx_nodes(
-        graph, position, node_size=node_size, node_color="w", nodelist=filtered_nodelist
+        graph, position, node_size=node_size, node_color="w", alpha=0.8, node_shape='8', nodelist=filtered_nodelist
     )
     fig.set_edgecolor("k")
-    nx.draw_networkx_edges(graph, position, alpha=0.5, edgelist=filtered_edgelist)
+
+    nx.draw_networkx_edges(graph, position, width=0.5, alpha=0.5, edgelist=filtered_edgelist)
 
     for i in range(n_communities):
             if len(partition[i]) > 0:
@@ -327,6 +312,8 @@ def print_dc(tc, dynamic_coms, t, com_id, name, dyn_com_id, snapshots, snapshot_
                 graph,
                 position,
                 node_size=size,
+                alpha=0.5,
+                node_shape='8',
                 nodelist=partition[i],
                 node_color=[get_color(i, com_id, name, dyn_com_id, cmap)],
             )
@@ -340,30 +327,84 @@ def get_color(i, com_id, name, dyn_com_id, cmap):
     else:
         return 'white'
 
+
+# Print the given dynamic community, iterating through al it's static communities in all timesteps it exists
+def print_dyn_com(dynamic_coms, id, tc, snapshots, snapshot_times, names_df, com_events):
+    dynamic_com = dynamic_coms[id]
+
+    for part in dynamic_com:
+        part_timestep = part.split('_')[0]
+        com_id = part.split('_')[1]
+        partition = tc.get_clustering_at(int(part_timestep)).communities
+        com = partition[int(com_id)]
+        interval = snapshot_times[int(part_timestep)]
+        print(f"Timestep: {part_timestep}, Period: {interval}")
+        print_dc(tc, dynamic_coms, int(part_timestep), com_id, None, id, snapshots, snapshot_times)
+        
+         # Get degree centralities
+        degree_centrality = nx.degree_centrality(snapshots[int(part_timestep)])
+        dc_centrality_dict = {}
+        for node in com:
+            com_name = names_df[names_df['uri'] == node]['name'].iloc[0]
+            dc_centrality_dict[node] = (degree_centrality[node], com_name)
+        dc_centrality_dict_sorted = sorted(dc_centrality_dict.items(), key=lambda item: item[1], reverse=True)
+
+        for value in dc_centrality_dict_sorted:
+            print(f"{value[1][1]} - Centrality: {round(value[1][0], 3)} - URI: {value[0]}")
+         
+        # Check if community events happened
+        merges = []
+        splits =[]
+        if int(part_timestep) in com_events:
+            t_events = com_events[int(part_timestep)]
+            for event in t_events:
+                # Some list comprehensions to sperete dynamic community ids fron community ids
+                if event[0] == 'm' and id in [e[0] for e in event[1]]:
+                    merges_with = list(filter(lambda x: x[0] != id, event[1]))
+                    merges.append(merges_with)
+                if event[0] == 's':
+                    split_dyn_coms = [e[0] for e in event[2]]
+                    if id in split_dyn_coms:
+                            split_from = event[1]
+                            split_into = list(filter(lambda x: x[0] != id, event[2]))
+                            splits.append((split_from, split_into))
+                        
+        if len(merges) > 0:
+            print()
+            print("MERGED WITH:")
+        for merge in merges:
+            for m in merge:
+                print(m[0])
+                print_splits_merges(tc, m[1], snapshots, names_df)
+        if len(splits) > 0:
+            print()
+            for split in splits:
+                print(f"COMMUNITY WAS SPLIT FROM: {split[0][0]}")
+                print_splits_merges(tc, split[0][1], snapshots, names_df)
+            print()
+            print("INTO THIS COMMUNITY AND: ",end = ' ')
+            for split in splits:
+                print(split[1][0][0])
+                print_splits_merges(tc, split[1][0][1], snapshots, names_df)
+
+        print("---------------------------------------------------------------")
+
+
 # Given a name, find all dynamic communities it belongs to and export them in the timesteps it belongs to them
-def find_dyn_com(dynamic_coms, name, tc, snapshots, snapshot_times):
+def find_dyn_com(dynamic_coms, name, tc, snapshots, snapshot_times, names_df, com_events):
     timesteps = tc.get_observation_ids()
     print(f"NAME TO FIND: {name}")
-    cache_folder = Path("./src/cache/")    
-    file_to_check = cache_folder / "attribute_cache.gpickle"
-    if not file_to_check.exists():
-        attribute_cache = {}
-    else:
-        attribute_cache = nx.read_gpickle(cache_folder / "attribute_cache.gpickle")
-
+    print()
     full_com_list = []
     for timestep in timesteps:
         partition = tc.get_clustering_at(timestep).communities
         com_id = None
+        
         # for all communities in timestep
         for index, com in enumerate(partition):
             com_index = None
             for node in com:
-                if node in attribute_cache:
-                    com_name = attribute_cache[node]
-                else:
-                    com_name = getName(node)
-                    attribute_cache[node] = com_name
+                com_name = names_df[names_df['uri'] == node]['name'].iloc[0]
                 if com_name == name:
                     com_index = index
                     break
@@ -373,7 +414,6 @@ def find_dyn_com(dynamic_coms, name, tc, snapshots, snapshot_times):
         if com_id is not None:
             full_com_id = str(timestep) + '_' + str(com_id)
             full_com_list.append(full_com_id)
-            print(full_com_id)
 
     for full_com_id in full_com_list:
         timestep = int(full_com_id.split('_')[0])
@@ -381,12 +421,12 @@ def find_dyn_com(dynamic_coms, name, tc, snapshots, snapshot_times):
         com_id = full_com_id.split('_')[1]
         dyn_com_id = match_dyn_com(dynamic_coms, full_com_id)
         print(f"DYNAMIC COMMUNITY: {dyn_com_id}")
+       
         partition = tc.get_clustering_at(timestep).communities
         com = partition[int(full_com_id.split('_')[1])]
     
         # Get degree centralities
         degree_centrality = nx.degree_centrality(snapshots[timestep])
-
         interval = snapshot_times[timestep]
         print(f"INTERVAL {interval}")
         print_dc(tc, dynamic_coms, timestep, com_id, name, dyn_com_id, snapshots, snapshot_times)
@@ -394,19 +434,68 @@ def find_dyn_com(dynamic_coms, name, tc, snapshots, snapshot_times):
         # Dictionary for storing and sorting degree centralities and names
         dc_centrality_dict = {}
         for node in com:
-            if node in attribute_cache:
-                com_name = attribute_cache[node]
-            else:
-                com_name = getName(node)
-                attribute_cache[node] = com_name
-
+            com_name = names_df[names_df['uri'] == node]['name'].iloc[0]
             dc_centrality_dict[node] = (degree_centrality[node], com_name)
+    
         dc_centrality_dict_sorted = sorted(dc_centrality_dict.items(), key=lambda item: item[1], reverse=True)
 
         for value in dc_centrality_dict_sorted:
             print(f"{value[1][1]} - Centrality: {round(value[1][0], 3)} - URI:{value[0]}")
-    
-        print("-------------------------------------------------------------")
+
+        # Check if community events happened
+        merges = []
+        splits =[]
+        if int(timestep) in com_events:
+            t_events = com_events[int(timestep)]
+            for event in t_events:
+                # Some list comprehensions to sperete dynamic community ids fron community ids
+                if event[0] == 'm' and dyn_com_id in [e[0] for e in event[1]]:
+                    merges_with = list(filter(lambda x: x[0] != dyn_com_id, event[1]))
+                    merges.append(merges_with)
+                if event[0] == 's':
+                    split_dyn_coms = [e[0] for e in event[2]]
+                    if dyn_com_id in split_dyn_coms:
+                            split_from = event[1]
+                            split_into = list(filter(lambda x: x[0] != dyn_com_id, event[2]))
+                            splits.append((split_from, split_into))
+                        
+        if len(merges) > 0:
+            print()
+            print("MERGED WITH:")
+        for merge in merges:
+            for m in merge:
+                print(m[0])
+                print_splits_merges(tc, m[1], snapshots, names_df)
+        if len(splits) > 0:
+            print()
+            for split in splits:
+                print(f"COMMUNITY WAS SPLIT FROM: {split[0][0]}")
+                print_splits_merges(tc, split[0][1], snapshots, names_df)
+            print()
+            print("INTO THIS COMMUNITY AND: ",end = ' ')
+            for split in splits:
+                print(split[1][0][0])
+                print_splits_merges(tc, split[1][0][1], snapshots, names_df)
+
+        print("---------------------------------------------------------------")
+
+
+def print_splits_merges(tc, comm_id, snapshots, names_df):
+    timestep = int(comm_id.split('_')[0])
+    partition = tc.get_clustering_at(timestep).communities
+    com = partition[int(comm_id.split('_')[1])]
+    degree_centrality = nx.degree_centrality(snapshots[timestep])
+
+    dc_centrality_dict = {}
+    print("#############################################")
+    for node in com:
+        com_name = names_df[names_df['uri'] == node]['name'].iloc[0]
+        dc_centrality_dict[node] = (degree_centrality[node], com_name)
+    dc_centrality_dict_sorted = sorted(dc_centrality_dict.items(), key=lambda item: item[1], reverse=True)
+
+    for value in dc_centrality_dict_sorted:
+        print(f"{value[1][1]} - Centrality: {round(value[1][0], 3)} - URI: {value[0]}")
+    print("#############################################")
 
 
 
