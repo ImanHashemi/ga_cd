@@ -258,7 +258,7 @@ def matching(tc, theta):
                         split2 = match_dyn_com(dynamic_coms, curr_com)
                         print(f"SPLITTING {to_split} ({dynamic_coms[match][-2]}) into {split1} ({fronts[match]}) and {split2} ({curr_com})")
                         if t in com_events:
-                            com_events[t].append(('s', (to_split, to_split_comm), (split1, split1_comm), (split2, curr_com)))
+                            com_events[t].append(('s', (to_split, to_split_comm), [(split1, split1_comm), (split2, curr_com)]))
                             com_events_dyn[t].append(('s', (to_split, split1, split2)))
 
                         else:
